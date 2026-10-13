@@ -170,21 +170,46 @@ function rescaleSnapshotGroupAmount<T extends OnyxTypes.Transaction>(transaction
 }
 
 /**
- * Whether any of the given splits still lives on a report that hasn't been submitted yet.
+ * Whether a split still lives on a report that hasn't been submitted yet, going by the live transaction's report first.
  */
-function hasEditableSplitExpenseLeft(
-    splitExpenses: SplitExpense[],
+function isSplitOnUnsubmittedReport(
+    transactionID: string | undefined,
+    fallbackReportID: string | undefined,
     allTransactionsList: OnyxCollection<OnyxTypes.Transaction>,
     allReportsList: OnyxCollection<OnyxTypes.Report>,
     searchReportsData: SearchResultDataType | undefined,
 ): boolean {
-    return splitExpenses.some((expense) => {
-        const transactionKey = `${ONYXKEYS.COLLECTION.TRANSACTION}${expense.transactionID}` as const;
-        const liveReportID = allTransactionsList?.[transactionKey]?.reportID ?? searchReportsData?.[transactionKey]?.reportID ?? expense.reportID;
-        const reportKey = `${ONYXKEYS.COLLECTION.REPORT}${liveReportID}` as const;
-        const statusNum = allReportsList?.[reportKey]?.statusNum ?? searchReportsData?.[reportKey]?.statusNum ?? CONST.REPORT.STATUS_NUM.OPEN;
-        return statusNum < CONST.REPORT.STATUS_NUM.SUBMITTED;
-    });
+    const transactionKey = `${ONYXKEYS.COLLECTION.TRANSACTION}${transactionID}` as const;
+    const liveReportID = allTransactionsList?.[transactionKey]?.reportID ?? searchReportsData?.[transactionKey]?.reportID ?? fallbackReportID;
+    const reportKey = `${ONYXKEYS.COLLECTION.REPORT}${liveReportID}` as const;
+    const statusNum = allReportsList?.[reportKey]?.statusNum ?? searchReportsData?.[reportKey]?.statusNum ?? CONST.REPORT.STATUS_NUM.OPEN;
+    return statusNum < CONST.REPORT.STATUS_NUM.SUBMITTED;
+}
+
+/**
+ * Whether saving these splits reverts the split back into the original expense, i.e. only one split is left. The server only
+ * reverts while none of the split's children is on a submitted report, and a split rejected onto a new open report doesn't
+ * change that for its siblings, so every child is checked, not only the one left in the editor.
+ */
+function isReverseSplit(
+    splitExpenses: SplitExpense[],
+    allChildTransactions: Array<OnyxEntry<OnyxTypes.Transaction>>,
+    allTransactionsList: OnyxCollection<OnyxTypes.Transaction>,
+    allReportsList: OnyxCollection<OnyxTypes.Report>,
+    searchReportsData: SearchResultDataType | undefined,
+): boolean {
+    if (splitExpenses.length !== 1 || allChildTransactions.length === 0) {
+        return false;
+    }
+    const hasEditableSplitExpenseLeft = splitExpenses.some((expense) =>
+        isSplitOnUnsubmittedReport(expense.transactionID, expense.reportID, allTransactionsList, allReportsList, searchReportsData),
+    );
+    return (
+        hasEditableSplitExpenseLeft &&
+        allChildTransactions.every((childTransaction) =>
+            isSplitOnUnsubmittedReport(childTransaction?.transactionID, childTransaction?.reportID, allTransactionsList, allReportsList, searchReportsData),
+        )
+    );
 }
 
 function updateSplitTransactions({
@@ -318,8 +343,7 @@ function updateSplitTransactions({
 
     const isCreationOfSplits = allChildTransactions.length === 0;
     const currentSnapshotDataForSplits = allSnapshots?.[`${ONYXKEYS.COLLECTION.SNAPSHOT}${searchContext?.currentSearchHash}`]?.data;
-    const hasEditableSplitExpensesLeft = hasEditableSplitExpenseLeft(splitExpenses, allTransactionsList, allReportsList, currentSnapshotDataForSplits);
-    const isReverseSplitOperation = splitExpenses.length === 1 && allChildTransactions.length > 0 && hasEditableSplitExpensesLeft;
+    const isReverseSplitOperation = isReverseSplit(splitExpenses, allChildTransactions, allTransactionsList, allReportsList, currentSnapshotDataForSplits);
 
     let splitThreadComments: OnyxTypes.ReportAction[] = [];
     let splitThreadReportAction: OnyxTypes.ReportAction | undefined;
@@ -570,6 +594,8 @@ function updateSplitTransactions({
     // blank and breaks downstream ownership lookups.
     const optimisticSelfDMIouActionsByReportID: Record<string, Record<string, OnyxTypes.ReportAction>> = {};
 
+    // The expense action a revert creates for the original transaction, so a refused revert can remove it again
+    let reverseSplitIOUActionUpdate: {reportActionsKey: `${typeof ONYXKEYS.COLLECTION.REPORT_ACTIONS}${string}`; reportActionID: string} | undefined;
     for (const [index, splitExpense] of splitExpenses.entries()) {
         const existingTransactionID = isReverseSplitOperation ? originalTransactionID : splitExpense.transactionID;
         const splitTransaction = allTransactionsList?.[`${ONYXKEYS.COLLECTION.TRANSACTION}${existingTransactionID}`];
@@ -828,6 +854,7 @@ function updateSplitTransactions({
             transaction: optimisticTransactionFromGetMoneyRequest,
             onyxData: moneyRequestInformationOnyxData,
             iouAction,
+            iouReport: iouReportFromGetMoneyRequest,
         } = getMoneyRequestInformation({
             isVendorMatchingBetaEnabled,
             participantParams,
@@ -858,6 +885,15 @@ function updateSplitTransactions({
             getCurrencyDecimals,
             rules,
         });
+
+        // A self DM revert writes its action to the self DM, not to the IOU report it builds
+        const reverseSplitIOUActionReportID = isSelfDMSplit && selfDMReportID ? selfDMReportID : iouReportFromGetMoneyRequest?.reportID;
+        if (isReverseSplitOperation && reverseSplitIOUActionReportID) {
+            reverseSplitIOUActionUpdate = {
+                reportActionsKey: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${reverseSplitIOUActionReportID}`,
+                reportActionID: iouAction.reportActionID,
+            };
+        }
 
         let updateMoneyRequestParamsOnyxData: OnyxData<UpdateMoneyRequestDataKeys> = {};
         const currentSplit = splits.at(index);
@@ -1662,6 +1698,24 @@ function updateSplitTransactions({
         }
     }
 
+    if (isReverseSplitOperation) {
+        // If the server refuses the revert, put the original transaction back as it was. Otherwise it keeps the revert's error, and
+        // "Edit splits" can't open anymore because isSplitAction skips a transaction with errors.
+        onyxData.failureData?.push({
+            onyxMethod: Onyx.METHOD.SET,
+            key: `${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`,
+            value: originalTransaction ?? null,
+        });
+        // Also drop the expense action the revert added, or dismissing its error would delete the original transaction again
+        if (reverseSplitIOUActionUpdate) {
+            onyxData.failureData?.push({
+                onyxMethod: Onyx.METHOD.MERGE,
+                key: reverseSplitIOUActionUpdate.reportActionsKey,
+                value: {[reverseSplitIOUActionUpdate.reportActionID]: null},
+            });
+        }
+    }
+
     if (!isReverseSplitOperation) {
         // Use SET to update originalTransaction more quickly in Onyx as compared to MERGE to prevent UI inconsistency
         onyxData.optimisticData?.push({
@@ -1906,67 +1960,6 @@ function updateSplitTransactions({
         });
         pushUpdatedReportPreviewActionToOnyxData();
 
-        // Skip only when the reverse split's restored transaction stays in expenseReportID — that
-        // report isn't becoming empty. If the surviving split lives in a different report (e.g. it
-        // was moved elsewhere), expenseReportID can still genuinely lose its last transaction.
-        const reverseSplitKeepsOriginalInThisReport = isReverseSplitOperation && splitExpenses.at(0)?.reportID === expenseReportID;
-        const isLastTransactionInReport =
-            !reverseSplitKeepsOriginalInThisReport && Object.values(allTransactionsList ?? {}).filter((itemTransaction) => itemTransaction?.reportID === expenseReportID).length === 1;
-        if (isLastTransactionInReport && expenseReportID) {
-            onyxData.optimisticData?.push({
-                onyxMethod: Onyx.METHOD.MERGE,
-                key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
-                value: {
-                    reportID: null,
-                    pendingFields: {
-                        preview: CONST.RED_BRICK_ROAD_PENDING_ACTION.DELETE,
-                    },
-                },
-            });
-            onyxData.successData?.push({
-                onyxMethod: Onyx.METHOD.SET,
-                key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
-                value: null,
-            });
-            onyxData.failureData?.push({
-                onyxMethod: Onyx.METHOD.MERGE,
-                key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
-                value: {
-                    reportID: expenseReportID,
-                    pendingFields: null,
-                },
-            });
-            if (expenseReport?.parentReportID && expenseReport?.parentReportActionID) {
-                onyxData.optimisticData?.push({
-                    onyxMethod: Onyx.METHOD.MERGE,
-                    key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
-                    value: {
-                        [expenseReport?.parentReportActionID]: {
-                            pendingAction: CONST.RED_BRICK_ROAD_PENDING_ACTION.DELETE,
-                        },
-                    },
-                });
-                onyxData.successData?.push({
-                    onyxMethod: Onyx.METHOD.MERGE,
-                    key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
-                    value: {
-                        [expenseReport?.parentReportActionID]: {
-                            pendingAction: null,
-                        },
-                    },
-                });
-                onyxData.failureData?.push({
-                    onyxMethod: Onyx.METHOD.MERGE,
-                    key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
-                    value: {
-                        [expenseReport?.parentReportActionID]: {
-                            pendingAction: null,
-                        },
-                    },
-                });
-            }
-        }
-
         const originalTransactionThreadReportID = splits.at(0)?.transactionThreadReportID;
         if (splitThreadComments.length > 0 && originalTransactionThreadReportID && splitTransactionThreadReportID) {
             const optimisticMovedComments: Record<string, OnyxTypes.ReportAction> = {};
@@ -2021,6 +2014,78 @@ function updateSplitTransactions({
         }
     }
 
+    // Skip only when the reverse split's restored transaction stays in expenseReportID — that
+    // report isn't becoming empty. If the surviving split lives in a different report (e.g. it
+    // was moved elsewhere), expenseReportID can still genuinely lose its last transaction.
+    const reverseSplitKeepsOriginalInThisReport = isReverseSplitOperation && splitExpenses.at(0)?.reportID === expenseReportID;
+    const expenseReportTransactions = Object.values(allTransactionsList ?? {}).filter((itemTransaction) => itemTransaction?.reportID === expenseReportID);
+    // An update empties expenseReportID too when every expense on it is a split this save removes, e.g. the split left
+    // after the other one was rejected onto a new report. A split without a reportID stays where it is.
+    const doesUpdateEmptyExpenseReport =
+        !isCreationOfSplits &&
+        !isReverseSplitOperation &&
+        expenseReportTransactions.length > 0 &&
+        expenseReportTransactions.every((itemTransaction) => itemTransaction?.comment?.originalTransactionID === originalTransactionID) &&
+        !splitExpenses.some(
+            (splitExpense) =>
+                (splitExpense.reportID ?? allTransactionsList?.[`${ONYXKEYS.COLLECTION.TRANSACTION}${splitExpense.transactionID}`]?.reportID ?? expenseReportID) === expenseReportID,
+        );
+    const isLastTransactionInReport = doesUpdateEmptyExpenseReport || (isReverseSplitOperation && !reverseSplitKeepsOriginalInThisReport && expenseReportTransactions.length === 1);
+    if (isLastTransactionInReport && expenseReportID) {
+        onyxData.optimisticData?.push({
+            onyxMethod: Onyx.METHOD.MERGE,
+            key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
+            value: {
+                reportID: null,
+                pendingFields: {
+                    preview: CONST.RED_BRICK_ROAD_PENDING_ACTION.DELETE,
+                },
+            },
+        });
+        onyxData.successData?.push({
+            onyxMethod: Onyx.METHOD.SET,
+            key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
+            value: null,
+        });
+        onyxData.failureData?.push({
+            onyxMethod: Onyx.METHOD.MERGE,
+            key: `${ONYXKEYS.COLLECTION.REPORT}${expenseReportID}`,
+            value: {
+                reportID: expenseReportID,
+                pendingFields: null,
+            },
+        });
+        if (expenseReport?.parentReportID && expenseReport?.parentReportActionID) {
+            onyxData.optimisticData?.push({
+                onyxMethod: Onyx.METHOD.MERGE,
+                key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
+                value: {
+                    [expenseReport?.parentReportActionID]: {
+                        pendingAction: CONST.RED_BRICK_ROAD_PENDING_ACTION.DELETE,
+                    },
+                },
+            });
+            onyxData.successData?.push({
+                onyxMethod: Onyx.METHOD.MERGE,
+                key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
+                value: {
+                    [expenseReport?.parentReportActionID]: {
+                        pendingAction: null,
+                    },
+                },
+            });
+            onyxData.failureData?.push({
+                onyxMethod: Onyx.METHOD.MERGE,
+                key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport?.parentReportID}`,
+                value: {
+                    [expenseReport?.parentReportActionID]: {
+                        pendingAction: null,
+                    },
+                },
+            });
+        }
+    }
+
     if (!isCreationOfSplits && !isReverseSplitOperation) {
         const splitUpdateFailureDataKeys: Array<`${typeof ONYXKEYS.COLLECTION.TRANSACTION}${string}` | `${typeof ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${string}`> = [
             `${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${originalTransactionID}`,
@@ -2068,7 +2133,8 @@ function updateSplitTransactions({
         // The format is: splits[0][amount], splits[0][category], splits[0][tag] etc.
         const splitApiParams = {} as Record<string, string | number | boolean>;
         for (const [i, split] of splits.entries()) {
-            for (const [key, value] of Object.entries(split)) {
+            // The description goes out as plain text, like the revert sends it, so the server doesn't store the JSON string as the comment
+            for (const [key, value] of Object.entries({...split, comment: split.comment?.comment ?? ''})) {
                 splitApiParams[`splits[${i}][${key}]`] = value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
             }
         }
@@ -2083,5 +2149,5 @@ function updateSplitTransactions({
     TransitionTracker.runAfterTransitions({callback: () => removeDraftSplitTransaction(originalTransactionID), waitForUpcomingTransition: true});
 }
 
-export {hasEditableSplitExpenseLeft, updateSplitTransactions};
+export {isReverseSplit, updateSplitTransactions};
 export type {UpdateSplitTransactionsParams};

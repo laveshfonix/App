@@ -1,4 +1,6 @@
 import initOnyxDerivedValues from '@libs/actions/OnyxDerived';
+import {WRITE_COMMANDS} from '@libs/API/types';
+import {writeWhenReady} from '@libs/API/writeWhenReady';
 import Navigation from '@libs/Navigation/Navigation';
 import {isMoneyRequestAction} from '@libs/ReportActionsUtils';
 import {buildOptimisticIOUReportAction} from '@libs/ReportUtils';
@@ -21,7 +23,7 @@ import createPersonalDetails from '../../utils/collections/personalDetails';
 import {createSelfDM} from '../../utils/collections/reports';
 import createMock from '../../utils/createMock';
 import getOnyxValue from '../../utils/getOnyxValue';
-import {formatPhoneNumber, getCurrencyDecimalsLocal, getCurrencySymbolLocal, getGlobalFetchMock, getOnyxData} from '../../utils/TestHelper';
+import {formatPhoneNumber, getCurrencyDecimalsLocal, getCurrencySymbolLocal, getGlobalFetchMock, getOnyxData, getRequiredOnyxUpdates, getRequiredWriteCall} from '../../utils/TestHelper';
 import waitForBatchedUpdates from '../../utils/waitForBatchedUpdates';
 import waitForNetworkPromises from '../../utils/waitForNetworkPromises';
 
@@ -596,6 +598,101 @@ describe('updateSplitTransactionsFromSplitExpensesFlow - selfDM', () => {
 
         expect(childTransaction1AfterEdit?.reportID).toBe(CONST.REPORT.UNREPORTED_REPORT_ID);
         expect(childTransaction2AfterEdit?.reportID).toBe(CONST.REPORT.UNREPORTED_REPORT_ID);
+    });
+
+    it('removes the expense action a refused revert added to the selfDM', async () => {
+        // Given a selfDM tracked expense split in two
+        const {selfDMReport, originalTransaction, trackIouAction} = await setupSelfDMTrackedExpense();
+        let allTransactions: OnyxCollection<Transaction>;
+        let allReports: OnyxCollection<Report>;
+        let allReportNameValuePairs: OnyxCollection<ReportNameValuePairs>;
+        const loadCollections = async () => {
+            await getOnyxData({
+                key: ONYXKEYS.COLLECTION.TRANSACTION,
+                callback: (value) => {
+                    allTransactions = value;
+                },
+            });
+            await getOnyxData({
+                key: ONYXKEYS.COLLECTION.REPORT,
+                callback: (value) => {
+                    allReports = value;
+                },
+            });
+            await getOnyxData({
+                key: ONYXKEYS.COLLECTION.REPORT_NAME_VALUE_PAIRS,
+                callback: (value) => {
+                    allReportNameValuePairs = value;
+                },
+            });
+        };
+        const saveSplits = (splitExpenses: Array<{transactionID: string; amount: number}>) =>
+            updateSplitTransactionsFromSplitExpensesFlow({
+                isVendorMatchingBetaEnabled: false,
+                rules: undefined,
+                getCurrencyDecimals: getCurrencyDecimalsLocal,
+                getCurrencySymbol: getCurrencySymbolLocal,
+                allTransactionsList: allTransactions,
+                allReportsList: allReports,
+                reportDrafts: {},
+                allReportActionsList: undefined,
+                allReportNameValuePairsList: allReportNameValuePairs,
+                transactionData: {
+                    reportID: selfDMReport.reportID,
+                    originalTransactionID: originalTransaction.transactionID,
+                    splitExpenses: splitExpenses.map((splitExpense) => ({
+                        ...splitExpense,
+                        reportID: CONST.REPORT.UNREPORTED_REPORT_ID,
+                        created: DateUtils.getDBTime(),
+                        merchant: 'Grocery Store',
+                    })),
+                    splitExpensesTotal: 2000,
+                },
+                searchContext: {currentSearchHash: -2},
+                policyCategories: undefined,
+                policy: undefined,
+                policyRecentlyUsedCategories: [],
+                iouReport: undefined,
+                firstIOU: trackIouAction,
+                isASAPSubmitBetaEnabled: false,
+                currentUserPersonalDetails,
+                transactionViolations: {},
+                policyRecentlyUsedCurrencies: [],
+                quickAction: undefined,
+                allPolicyTags: {},
+                personalDetails: {[RORY_ACCOUNT_ID]: {accountID: RORY_ACCOUNT_ID, login: RORY_EMAIL}},
+                transactionReport: selfDMReport,
+                expenseReport: undefined,
+                isOffline: false,
+                delegateAccountID: undefined,
+                isTrackIntentUser: false,
+                formatPhoneNumber,
+            });
+        await loadCollections();
+        saveSplits([
+            {transactionID: 'revert-transaction-1', amount: 1000},
+            {transactionID: 'revert-transaction-2', amount: 1000},
+        ]);
+        await waitForBatchedUpdates();
+        await waitForNetworkPromises();
+        await waitForBatchedUpdates();
+        await loadCollections();
+        jest.mocked(writeWhenReady).mockClear();
+
+        // When one split is removed, so the save reverts the split
+        saveSplits([{transactionID: 'revert-transaction-1', amount: 2000}]);
+        await waitForBatchedUpdates();
+
+        // Then the failure data removes the action the revert added to the selfDM, because a leftover errored action would
+        // delete the original transaction again when its error is dismissed
+        const revertCall = jest.mocked(writeWhenReady).mock.calls.find(([command]) => command === WRITE_COMMANDS.REVERT_SPLIT_TRANSACTION);
+        const [, revertParams, revertOnyxData] = getRequiredWriteCall([revertCall], 0);
+        const revertActionID = String(revertParams.splitReportActionID);
+        expect(getRequiredOnyxUpdates(revertOnyxData, 'failureData')).toContainEqual({
+            onyxMethod: Onyx.METHOD.MERGE,
+            key: `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${selfDMReport.reportID}`,
+            value: {[revertActionID]: null},
+        });
     });
 
     it('does NOT create a new IOU expense report when splitting a selfDM tracked expense', async () => {

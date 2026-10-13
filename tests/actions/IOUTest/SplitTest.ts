@@ -4791,6 +4791,134 @@ describe('updateSplitTransactionsFromSplitExpensesFlow', () => {
         expect(Navigation.dismissModalWithReport).not.toHaveBeenCalled();
     });
 
+    async function saveSplitThatEmptiesExpenseReport(expenseReportOverrides: Partial<Report> = {}) {
+        // An expense report whose only expense is the original of a split, with the remaining split on another report, so
+        // saving one split empties the expense report
+        const chatReport: Report = {...createRandomReport(20, CONST.REPORT.CHAT_TYPE.POLICY_EXPENSE_CHAT)};
+        const expenseReport: Report = {
+            ...createRandomReport(21, undefined),
+            type: CONST.REPORT.TYPE.EXPENSE,
+            chatReportID: chatReport.reportID,
+            parentReportID: chatReport.reportID,
+            ...expenseReportOverrides,
+        };
+        const childReport: Report = {...createRandomReport(22, undefined), type: CONST.REPORT.TYPE.EXPENSE};
+        const originalTransaction: Transaction = {
+            amount: 10000,
+            currency: 'USD',
+            transactionID: 'orig-empty-1',
+            reportID: expenseReport.reportID,
+            created: DateUtils.getDBTime(),
+            merchant: 'test',
+        };
+        const childTransaction: Transaction = {
+            amount: 5000,
+            currency: 'USD',
+            transactionID: 'child-empty-1',
+            reportID: childReport.reportID,
+            created: DateUtils.getDBTime(),
+            merchant: 'test',
+            comment: {originalTransactionID: originalTransaction.transactionID, source: CONST.IOU.TYPE.SPLIT},
+        };
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.REPORT}${chatReport.reportID}`, chatReport);
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.REPORT}${expenseReport.reportID}`, expenseReport);
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.REPORT}${childReport.reportID}`, childReport);
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransaction.transactionID}`, originalTransaction);
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.TRANSACTION}${childTransaction.transactionID}`, childTransaction);
+        let allTransactions: OnyxCollection<Transaction>;
+        let allReports: OnyxCollection<Report>;
+        let allReportNameValuePairs: OnyxCollection<ReportNameValuePairs>;
+        await getOnyxData({
+            key: ONYXKEYS.COLLECTION.TRANSACTION,
+            callback: (value) => {
+                allTransactions = value;
+            },
+        });
+        await getOnyxData({
+            key: ONYXKEYS.COLLECTION.REPORT,
+            callback: (value) => {
+                allReports = value;
+            },
+        });
+        await getOnyxData({
+            key: ONYXKEYS.COLLECTION.REPORT_NAME_VALUE_PAIRS,
+            callback: (value) => {
+                allReportNameValuePairs = value;
+            },
+        });
+        const allPolicyTags = await getAllPolicyTags();
+        const reports = getTransactionAndExpenseReports(expenseReport.reportID);
+
+        updateSplitTransactionsFromSplitExpensesFlow({
+            isVendorMatchingBetaEnabled: false,
+            rules: undefined,
+            getCurrencyDecimals: getCurrencyDecimalsLocal,
+            getCurrencySymbol: getCurrencySymbolLocal,
+            allTransactionsList: allTransactions,
+            allReportsList: allReports,
+            reportDrafts: {},
+            allReportActionsList: undefined,
+            allReportNameValuePairsList: allReportNameValuePairs,
+            transactionData: {
+                reportID: expenseReport.reportID,
+                originalTransactionID: originalTransaction.transactionID,
+                splitExpenses: [{transactionID: childTransaction.transactionID, amount: 10000, created: DateUtils.getDBTime()}],
+                splitExpensesTotal: undefined,
+            },
+            searchContext: {currentSearchHash: -2},
+            policyCategories: undefined,
+            policy: undefined,
+            policyRecentlyUsedCategories: [],
+            iouReport: expenseReport,
+            firstIOU: undefined,
+            isASAPSubmitBetaEnabled: false,
+            currentUserPersonalDetails,
+            transactionViolations: {},
+            policyRecentlyUsedCurrencies: [],
+            quickAction: undefined,
+            allPolicyTags,
+            personalDetails: {[RORY_ACCOUNT_ID]: {accountID: RORY_ACCOUNT_ID, login: RORY_EMAIL}},
+            transactionReport: reports.transactionReport,
+            expenseReport: reports.expenseReport,
+            isOffline: false,
+            delegateAccountID: undefined,
+            isTrackIntentUser: false,
+            formatPhoneNumber,
+        });
+        await waitForBatchedUpdates();
+    }
+
+    it('should close the expense report panel instead of going back to it when a save from Search empties the report', async () => {
+        const Navigation = jest.requireMock('@src/libs/Navigation/Navigation');
+
+        try {
+            // Given the split editor was opened from Search, over the expense report's panel
+            jest.mocked(isSearchTopmostFullScreenRoute).mockReturnValue(true);
+
+            // When the save empties that expense report
+            await saveSplitThatEmptiesExpenseReport();
+
+            // Then the panel is closed, because going back to the emptied report would leave it loading while the navigate-back URL is set
+            expect(Navigation.dismissModal).toHaveBeenCalled();
+            expect(Navigation.navigateBackToLastSuperWideRHPScreen).not.toHaveBeenCalled();
+        } finally {
+            jest.mocked(isSearchTopmostFullScreenRoute).mockReset();
+        }
+    });
+
+    it('should go back to the Inbox instead of the parent chat when the user has no access to it', async () => {
+        const Navigation = jest.requireMock('@src/libs/Navigation/Navigation');
+        const Report = jest.requireMock('@src/libs/actions/Report');
+
+        // Given an expense report whose parent chat the user can't open, like the approver's vacation delegate
+        // When the save empties that expense report
+        await saveSplitThatEmptiesExpenseReport({hasParentAccess: false});
+
+        // Then the user goes back to the Inbox, since the parent chat would never load for them
+        expect(Report.setDeleteTransactionNavigateBackUrl).toHaveBeenCalledWith(ROUTES.INBOX);
+        expect(Navigation.goBack).toHaveBeenCalledWith(ROUTES.INBOX);
+    });
+
     it('should navigate to expense report normally when reverse-split is not the last transaction', async () => {
         const Navigation = jest.requireMock('@src/libs/Navigation/Navigation');
 
@@ -6553,6 +6681,218 @@ describe('updateSplitTransactions', () => {
             throw new Error('Expected split transaction failure errors to include a localized error object.');
         }
         expect(Object.values(latestSplitTransactionFailureErrors).at(0)).toBe(localizedFallback);
+    });
+
+    it('should update the splits instead of reverting, and remove the emptied report, when the other split was rejected onto a new open report', async () => {
+        // Given an expense split in two on a submitted report, and one split rejected onto a new open report
+        const {expenseReport, originalTransactionID} = await createBaseExpense();
+        if (!originalTransactionID || !expenseReport?.reportID) {
+            throw new Error('Missing original transaction data');
+        }
+        const iouAction = getIOUActionForReportID(expenseReport.reportID, originalTransactionID);
+        const {splitTransactionID1} = await splitToTwo(expenseReport, originalTransactionID, iouAction);
+        const rejectedToReport: Report = {
+            ...createRandomReport(100120, undefined),
+            type: CONST.REPORT.TYPE.EXPENSE,
+            stateNum: CONST.REPORT.STATE_NUM.OPEN,
+            statusNum: CONST.REPORT.STATUS_NUM.OPEN,
+        };
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.REPORT}${expenseReport.reportID}`, {stateNum: CONST.REPORT.STATE_NUM.SUBMITTED, statusNum: CONST.REPORT.STATUS_NUM.SUBMITTED});
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.REPORT}${rejectedToReport.reportID}`, rejectedToReport);
+        await Onyx.merge(`${ONYXKEYS.COLLECTION.TRANSACTION}${splitTransactionID1}`, {reportID: rejectedToReport.reportID});
+        await waitForBatchedUpdates();
+        const {allTransactions, allReports, allReportNameValuePairs} = await getCollections();
+        const allPolicyTags = await getAllPolicyTags();
+        const reports = getTransactionAndExpenseReports(expenseReport.reportID);
+        const writeSpy = jest.spyOn(APIlib, 'write');
+
+        // When the approver removes the split that stayed, which leaves only the rejected split in the editor
+        updateSplitTransactions({
+            isVendorMatchingBetaEnabled: false,
+            rules: undefined,
+            getCurrencyDecimals: getCurrencyDecimalsLocal,
+            getCurrencySymbol: getCurrencySymbolLocal,
+            allTransactionsList: allTransactions,
+            allReportsList: allReports,
+            reportDrafts: {},
+            allReportActionsList: undefined,
+            allReportNameValuePairsList: allReportNameValuePairs,
+            transactionData: {
+                reportID: expenseReport.reportID,
+                originalTransactionID,
+                splitExpenses: [{transactionID: splitTransactionID1, reportID: rejectedToReport.reportID, amount, created: DateUtils.getDBTime()}],
+                splitExpensesTotal: amount,
+            },
+            searchContext: {currentSearchHash: -2},
+            policyCategories: undefined,
+            policy: undefined,
+            policyRecentlyUsedCategories: [],
+            iouReport: expenseReport,
+            firstIOU: undefined,
+            isASAPSubmitBetaEnabled: false,
+            currentUserPersonalDetails,
+            transactionViolations: {},
+            policyRecentlyUsedCurrencies: [],
+            quickAction: undefined,
+            allPolicyTags,
+            personalDetails: {[RORY_ACCOUNT_ID]: {accountID: RORY_ACCOUNT_ID, login: RORY_EMAIL}},
+            transactionReport: reports.transactionReport,
+            expenseReport: reports.expenseReport,
+            isOffline: false,
+            delegateAccountID: undefined,
+            isTrackIntentUser: false,
+            formatPhoneNumber,
+        });
+        const commands = writeSpy.mock.calls.map(([command]) => command);
+        const updateCall = writeSpy.mock.calls.find(([command]) => command === WRITE_COMMANDS.UPDATE_SPLIT_TRANSACTION);
+        writeSpy.mockRestore();
+
+        // Then the splits are updated instead of reverted, because the server refuses to revert while a split is on a submitted report
+        expect(commands).not.toContain(WRITE_COMMANDS.REVERT_SPLIT_TRANSACTION);
+        expect(commands).toContain(WRITE_COMMANDS.UPDATE_SPLIT_TRANSACTION);
+
+        // And the submitted report, which has no expense left, is removed like a reverted split's report, so its page doesn't stay open
+        const [, , onyxData] = getRequiredWriteCall([updateCall], 0);
+        const expenseReportKey = `${ONYXKEYS.COLLECTION.REPORT}${expenseReport.reportID}`;
+        expect(getRequiredOnyxUpdates(onyxData, 'optimisticData')).toContainEqual(expect.objectContaining({key: expenseReportKey, value: expect.objectContaining({reportID: null})}));
+        expect(getRequiredOnyxUpdates(onyxData, 'successData')).toContainEqual({onyxMethod: Onyx.METHOD.SET, key: expenseReportKey, value: null});
+        expect(getRequiredOnyxUpdates(onyxData, 'failureData')).toContainEqual(
+            expect.objectContaining({key: expenseReportKey, value: expect.objectContaining({reportID: expenseReport.reportID})}),
+        );
+    });
+
+    it('should put the original transaction back if the server refuses to revert a split', async () => {
+        // Given an expense split in two on an open report, so removing one split reverts the split
+        const {expenseReport, originalTransactionID} = await createBaseExpense();
+        if (!originalTransactionID || !expenseReport?.reportID) {
+            throw new Error('Missing original transaction data');
+        }
+        const iouAction = getIOUActionForReportID(expenseReport.reportID, originalTransactionID);
+        const {splitTransactionID1} = await splitToTwo(expenseReport, originalTransactionID, iouAction);
+        const {allTransactions, allReports, allReportNameValuePairs} = await getCollections();
+        const allPolicyTags = await getAllPolicyTags();
+        const reports = getTransactionAndExpenseReports(expenseReport.reportID);
+        const originalTransactionKey = `${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}` as const;
+        const originalTransactionBeforeRevert = allTransactions?.[originalTransactionKey];
+        const writeSpy = jest.spyOn(APIlib, 'write');
+
+        // When one split is removed, which sends a revert
+        updateSplitTransactions({
+            isVendorMatchingBetaEnabled: false,
+            rules: undefined,
+            getCurrencyDecimals: getCurrencyDecimalsLocal,
+            getCurrencySymbol: getCurrencySymbolLocal,
+            allTransactionsList: allTransactions,
+            allReportsList: allReports,
+            reportDrafts: {},
+            allReportActionsList: undefined,
+            allReportNameValuePairsList: allReportNameValuePairs,
+            transactionData: {
+                reportID: expenseReport.reportID,
+                originalTransactionID,
+                splitExpenses: [{transactionID: splitTransactionID1, reportID: expenseReport.reportID, amount, created: DateUtils.getDBTime()}],
+                splitExpensesTotal: amount,
+            },
+            searchContext: {currentSearchHash: -2},
+            policyCategories: undefined,
+            policy: undefined,
+            policyRecentlyUsedCategories: [],
+            iouReport: expenseReport,
+            firstIOU: undefined,
+            isASAPSubmitBetaEnabled: false,
+            currentUserPersonalDetails,
+            transactionViolations: {},
+            policyRecentlyUsedCurrencies: [],
+            quickAction: undefined,
+            allPolicyTags,
+            personalDetails: {[RORY_ACCOUNT_ID]: {accountID: RORY_ACCOUNT_ID, login: RORY_EMAIL}},
+            transactionReport: reports.transactionReport,
+            expenseReport: reports.expenseReport,
+            isOffline: false,
+            delegateAccountID: undefined,
+            isTrackIntentUser: false,
+            formatPhoneNumber,
+        });
+        const revertCall = writeSpy.mock.calls.find(([command]) => command === WRITE_COMMANDS.REVERT_SPLIT_TRANSACTION);
+        writeSpy.mockRestore();
+
+        // Then the failure data ends by putting the original transaction back as it was, so a refused revert doesn't leave it with an
+        // error, which hides it from "Edit splits"
+        const [, params, onyxData] = getRequiredWriteCall([revertCall], 0);
+        const failureData = getRequiredOnyxUpdates(onyxData, 'failureData');
+        const lastOriginalTransactionFailureUpdate = failureData.findLast((update) => isObject(update) && update.key === originalTransactionKey);
+        expect(lastOriginalTransactionFailureUpdate).toEqual({onyxMethod: Onyx.METHOD.SET, key: originalTransactionKey, value: originalTransactionBeforeRevert});
+
+        // And it removes the expense action the revert added, so dismissing that action's error can't delete the original again
+        const revertActionID = String(params.splitReportActionID);
+        const expenseReportActionsKey = `${ONYXKEYS.COLLECTION.REPORT_ACTIONS}${expenseReport.reportID}`;
+        const lastRevertActionFailureUpdate = failureData.findLast(
+            (update) => isObject(update) && update.key === expenseReportActionsKey && isObject(update.value) && revertActionID in update.value,
+        );
+        expect(lastRevertActionFailureUpdate).toEqual({onyxMethod: Onyx.METHOD.MERGE, key: expenseReportActionsKey, value: {[revertActionID]: null}});
+    });
+
+    it('should send the split descriptions as plain text', async () => {
+        // Given an expense split in two
+        const {expenseReport, originalTransactionID} = await createBaseExpense();
+        if (!originalTransactionID || !expenseReport?.reportID) {
+            throw new Error('Missing original transaction data');
+        }
+        const iouAction = getIOUActionForReportID(expenseReport.reportID, originalTransactionID);
+        const {splitTransactionID1, splitTransactionID2} = await splitToTwo(expenseReport, originalTransactionID, iouAction);
+        const {allTransactions, allReports, allReportNameValuePairs} = await getCollections();
+        const allPolicyTags = await getAllPolicyTags();
+        const reports = getTransactionAndExpenseReports(expenseReport.reportID);
+        const writeSpy = jest.spyOn(APIlib, 'write');
+
+        // When the splits are saved with a description on the first one only
+        updateSplitTransactions({
+            isVendorMatchingBetaEnabled: false,
+            rules: undefined,
+            getCurrencyDecimals: getCurrencyDecimalsLocal,
+            getCurrencySymbol: getCurrencySymbolLocal,
+            allTransactionsList: allTransactions,
+            allReportsList: allReports,
+            reportDrafts: {},
+            allReportActionsList: undefined,
+            allReportNameValuePairsList: allReportNameValuePairs,
+            transactionData: {
+                reportID: expenseReport.reportID,
+                originalTransactionID,
+                splitExpenses: [
+                    {transactionID: splitTransactionID1, reportID: expenseReport.reportID, amount: amount / 2, description: 'Lunch', created: DateUtils.getDBTime()},
+                    {transactionID: splitTransactionID2, reportID: expenseReport.reportID, amount: amount / 2, created: DateUtils.getDBTime()},
+                ],
+                splitExpensesTotal: amount,
+            },
+            searchContext: {currentSearchHash: -2},
+            policyCategories: undefined,
+            policy: undefined,
+            policyRecentlyUsedCategories: [],
+            iouReport: expenseReport,
+            firstIOU: undefined,
+            isASAPSubmitBetaEnabled: false,
+            currentUserPersonalDetails,
+            transactionViolations: {},
+            policyRecentlyUsedCurrencies: [],
+            quickAction: undefined,
+            allPolicyTags,
+            personalDetails: {[RORY_ACCOUNT_ID]: {accountID: RORY_ACCOUNT_ID, login: RORY_EMAIL}},
+            transactionReport: reports.transactionReport,
+            expenseReport: reports.expenseReport,
+            isOffline: false,
+            delegateAccountID: undefined,
+            isTrackIntentUser: false,
+            formatPhoneNumber,
+        });
+        const updateCall = writeSpy.mock.calls.find(([command]) => command === WRITE_COMMANDS.UPDATE_SPLIT_TRANSACTION);
+        writeSpy.mockRestore();
+
+        // Then each description goes out as the text itself, like the revert sends it, and not as a JSON object the server would
+        // store as the comment and show as {"comment":""}
+        const [, params] = getRequiredWriteCall([updateCall], 0);
+        expect(params['splits[0][comment]']).toBe('Lunch');
+        expect(params['splits[1][comment]']).toBe('');
     });
 
     it('should keep all split transactions on hold when splitting a held transaction', async () => {
