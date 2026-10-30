@@ -421,7 +421,7 @@ function MoneyRequestView({
     const [originalTransaction] = useOnyx(`${ONYXKEYS.COLLECTION.TRANSACTION}${getNonEmptyStringOnyxID(transaction?.comment?.originalTransactionID)}`);
     const {isExpenseSplit} = getOriginalTransactionWithSplitInfo(transaction, originalTransaction);
     const [transactionReport] = useOnyx(`${ONYXKEYS.COLLECTION.REPORT}${transaction?.reportID}`);
-    const hasMultipleSplits = useHasMultipleSplitChildren(transaction?.comment?.originalTransactionID);
+    const hasMultipleSplits = useHasMultipleSplitChildren(transaction?.comment?.originalTransactionID, transaction?.reportID, currentUserAccountIDParam);
     const isReportOpen = isOpenReport(moneyRequestReport);
     const shouldShowSplitIndicator = isExpenseSplit && (hasMultipleSplits || isReportOpen);
     const isSplitAvailable =
@@ -1341,6 +1341,7 @@ function MoneyRequestView({
                                     personalPolicy?.outputCurrency,
                                     getCurrencyDecimals,
                                     getCurrencySymbol,
+                                    currentUserAccountIDParam,
                                 );
                                 return;
                             }

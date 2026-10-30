@@ -189,6 +189,7 @@ describe('initSplitExpense', () => {
                 undefined,
                 currencyListActions.getCurrencyDecimals,
                 currencyListActions.getCurrencySymbol,
+                RORY_ACCOUNT_ID,
             );
             await waitForBatchedUpdates();
 
@@ -269,6 +270,7 @@ describe('initSplitExpense', () => {
                 undefined,
                 currencyListActions.getCurrencyDecimals,
                 currencyListActions.getCurrencySymbol,
+                RORY_ACCOUNT_ID,
             );
             await waitForBatchedUpdates();
 
@@ -306,7 +308,7 @@ describe('initSplitExpense', () => {
         expect(await getOnyxValue(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`)).toBeFalsy();
 
         // When splitting again still selects the original draft key from those children.
-        initSplitExpense(child, undefined, undefined, undefined, undefined, undefined, currencyListActions.getCurrencyDecimals, currencyListActions.getCurrencySymbol);
+        initSplitExpense(child, undefined, undefined, undefined, undefined, undefined, currencyListActions.getCurrencyDecimals, currencyListActions.getCurrencySymbol, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         // Then the optimistic builder supplies its empty attendee default instead of borrowing child attendees.

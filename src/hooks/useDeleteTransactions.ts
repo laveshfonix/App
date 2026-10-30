@@ -189,6 +189,7 @@ function useDeleteTransactions({report, reportActions, policy}: UseDeleteTransac
                 personalPolicy?.outputCurrency,
                 getCurrencyDecimals,
                 getCurrencySymbol,
+                currentUserPersonalDetails.accountID,
                 {
                     navigateToEditSplitExpense: true,
                 },

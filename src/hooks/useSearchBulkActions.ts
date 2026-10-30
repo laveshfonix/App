@@ -3341,6 +3341,7 @@ function useSearchBulkActions({queryJSON}: UseSearchBulkActionsParams) {
                         personalPolicy?.outputCurrency,
                         getCurrencyDecimals,
                         getCurrencySymbol,
+                        currentUserPersonalDetails.accountID,
                     );
                 },
             });

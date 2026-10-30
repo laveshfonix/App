@@ -1,3 +1,5 @@
+import {isSplitOnSomeoneElsesOpenReport} from '@libs/SplitExpenseUtils';
+
 import CONST from '@src/CONST';
 import ONYXKEYS from '@src/ONYXKEYS';
 import type {Report, Transaction} from '@src/types/onyx';
@@ -28,13 +30,23 @@ function selectChildTransactionInfo(transactions: OnyxCollection<Transaction>, o
     return result;
 }
 
-function selectHasMultipleSplitChildReports(reports: OnyxCollection<Report>, childInfo: ChildTransactionInfo[] | undefined): boolean {
+function selectHasMultipleSplitChildReports(
+    reports: OnyxCollection<Report>,
+    childInfo: ChildTransactionInfo[] | undefined,
+    openedSplitReportID: string | undefined,
+    currentUserAccountID: number | undefined,
+): boolean {
     if (!childInfo || childInfo.length <= 1) {
         return false;
     }
+    const openedSplitReport = reports?.[`${ONYXKEYS.COLLECTION.REPORT}${openedSplitReportID}`];
     let count = 0;
     for (const child of childInfo) {
-        if (child.isSplitSource || !!reports?.[`${ONYXKEYS.COLLECTION.REPORT}${child.reportID}`]) {
+        const childReport = reports?.[`${ONYXKEYS.COLLECTION.REPORT}${child.reportID}`];
+        if (isSplitOnSomeoneElsesOpenReport(childReport, openedSplitReport, currentUserAccountID)) {
+            continue;
+        }
+        if (child.isSplitSource || !!childReport) {
             count++;
             if (count > 1) {
                 return true;
@@ -49,13 +61,13 @@ function selectHasMultipleSplitChildReports(reports: OnyxCollection<Report>, chi
  * Uses selectors on both TRANSACTION and REPORT collections so the consumer
  * only re-renders when the boolean result actually changes.
  */
-function useHasMultipleSplitChildren(originalTransactionID: string | undefined): boolean {
+function useHasMultipleSplitChildren(originalTransactionID: string | undefined, openedSplitReportID: string | undefined, currentUserAccountID: number | undefined): boolean {
     const childInfoSelector = (transactions: OnyxCollection<Transaction>) => selectChildTransactionInfo(transactions, originalTransactionID);
     const [childInfo] = useOnyx(ONYXKEYS.COLLECTION.TRANSACTION, {
         selector: childInfoSelector,
     });
 
-    const hasMultipleSelector = (reports: OnyxCollection<Report>) => selectHasMultipleSplitChildReports(reports, childInfo);
+    const hasMultipleSelector = (reports: OnyxCollection<Report>) => selectHasMultipleSplitChildReports(reports, childInfo, openedSplitReportID, currentUserAccountID);
     const [hasMultiple] = useOnyx(ONYXKEYS.COLLECTION.REPORT, {
         selector: hasMultipleSelector,
     });

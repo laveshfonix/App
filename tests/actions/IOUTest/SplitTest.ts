@@ -3081,7 +3081,7 @@ describe('updateSplitTransactionsFromSplitExpensesFlow', () => {
         mockFetch?.pause?.();
 
         const originalTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`);
-        initSplitExpense(originalTransaction, expenseReport, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(originalTransaction, expenseReport, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
         let draftTransaction = await getOnyxValue(draftKey);
         await saveSplitExpenses(draftTransaction?.comment?.splitExpenses ?? [], draftTransaction?.comment?.splitExpensesTotal ?? 0);
@@ -3097,7 +3097,7 @@ describe('updateSplitTransactionsFromSplitExpensesFlow', () => {
         });
         expect(childTransactions.length).toBe(2);
 
-        initSplitExpense(childTransactions.at(0), expenseReport, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(childTransactions.at(0), expenseReport, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
         draftTransaction = await getOnyxValue(draftKey);
         const removedSplitTransactionID = childTransactions.at(1)?.transactionID;
@@ -7240,6 +7240,34 @@ describe('updateSplitTransactions', () => {
         expect(updatedReportPreviewAction?.childVisibleActionCount).toEqual(2);
     });
 
+    it('should send each split description as plain text', async () => {
+        const {expenseReport, originalTransactionID} = await createBaseExpense();
+
+        if (!originalTransactionID) {
+            throw new Error('Missing original transaction data');
+        }
+
+        // Given an expense that is split in two, each split with its own description
+        const iouAction = getIOUActionForReportID(expenseReport?.reportID, originalTransactionID);
+        const writeSpy = jest.spyOn(APIlib, 'write');
+
+        // When the split is saved
+        await splitToTwo(expenseReport, originalTransactionID, iouAction);
+        const splitTransactionCall = writeSpy.mock.calls.find(([command]) => command === WRITE_COMMANDS.SPLIT_TRANSACTION);
+        writeSpy.mockRestore();
+        if (!splitTransactionCall) {
+            throw new Error('Expected API.write call for splitting the transaction.');
+        }
+        const [, params] = getRequiredWriteCall([splitTransactionCall], 0);
+        if (!isObject(params)) {
+            throw new Error('Expected split transaction params to be an object.');
+        }
+
+        // Then each description goes out as its text, not as the string {"comment":"..."} the server would keep as the comment
+        expect(params['splits[0][comment]']).toBe('Split 1');
+        expect(params['splits[1][comment]']).toBe('Split 2');
+    });
+
     it('should preserve childVisibleActionCount when source thread actions are unavailable during split', async () => {
         const {expenseReport, transactionThreadReportID, originalTransactionID} = await createBaseExpense();
 
@@ -7979,7 +8007,7 @@ describe('initSplitExpense', () => {
             reportID: '456',
         };
 
-        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         const draftTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${transaction.transactionID}`);
@@ -8004,7 +8032,7 @@ describe('initSplitExpense', () => {
     });
     it('should not initialize split expense for null transaction', async () => {
         const transaction: Transaction | undefined = undefined;
-        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         expect(transaction).toBeFalsy();
@@ -8028,7 +8056,7 @@ describe('initSplitExpense', () => {
             reportID: '456',
         };
 
-        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         const draftTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${transaction.transactionID}`);
@@ -8098,7 +8126,7 @@ describe('initSplitExpense', () => {
             reportID: '456',
         };
 
-        initSplitExpense(transaction, undefined, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, policy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         const draftTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${transaction.transactionID}`);
@@ -8171,7 +8199,7 @@ describe('initSplitExpense', () => {
         await waitForBatchedUpdates();
 
         // When the user initiates a split on the remaining transaction
-        initSplitExpense(remainingTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(remainingTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         // Then a fresh split is started keyed by the remaining transaction (2 new splits)
@@ -8232,7 +8260,7 @@ describe('initSplitExpense', () => {
         await waitForBatchedUpdates();
 
         // When the user opens the edit-splits flow from one of the children
-        initSplitExpense(secondChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(secondChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         // Then the edit-splits draft is keyed by the original transaction and rebuilt from the existing children
@@ -8243,6 +8271,191 @@ describe('initSplitExpense', () => {
         // And no fresh split was started keyed by the child the user opened it from
         const freshDraft = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${secondChildTransactionID}`);
         expect(freshDraft).toBeFalsy();
+    });
+
+    it('should start a new split instead of editing splits for the approver after one split was rejected back to the submitter', async () => {
+        const originalTransactionID = 'rejected-original';
+        const rejectedChildTransactionID = 'rejected-child';
+        const remainingChildTransactionID = 'remaining-child';
+        const submittedReportID = 'rejected-submitted-report';
+        const draftReportID = 'rejected-draft-report';
+
+        // Given Carlos's submitted report that Rory approves
+        await Onyx.set(`${ONYXKEYS.COLLECTION.REPORT}${submittedReportID}`, {
+            reportID: submittedReportID,
+            type: CONST.REPORT.TYPE.EXPENSE,
+            ownerAccountID: CARLOS_ACCOUNT_ID,
+            managerID: RORY_ACCOUNT_ID,
+            stateNum: CONST.REPORT.STATE_NUM.SUBMITTED,
+            statusNum: CONST.REPORT.STATUS_NUM.SUBMITTED,
+        });
+
+        // And Carlos's open report, where Rory's reject moved one of the splits
+        await Onyx.set(`${ONYXKEYS.COLLECTION.REPORT}${draftReportID}`, {
+            reportID: draftReportID,
+            type: CONST.REPORT.TYPE.EXPENSE,
+            ownerAccountID: CARLOS_ACCOUNT_ID,
+            stateNum: CONST.REPORT.STATE_NUM.OPEN,
+            statusNum: CONST.REPORT.STATUS_NUM.OPEN,
+        });
+
+        // And the original expense with its two splits: the rejected one on the open report, the other still on the submitted report
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`, {
+            transactionID: originalTransactionID,
+            amount: -100,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            created: DateUtils.getDBTime(),
+            reportID: CONST.REPORT.SPLIT_REPORT_ID,
+        });
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${rejectedChildTransactionID}`, {
+            transactionID: rejectedChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: draftReportID,
+        });
+        const remainingChildTransaction: Transaction = {
+            transactionID: remainingChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: submittedReportID,
+        };
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${remainingChildTransactionID}`, remainingChildTransaction);
+        await waitForBatchedUpdates();
+
+        // When Rory, the approver, picks Split on the split that is left on the report he reviews
+        initSplitExpense(remainingChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
+        await waitForBatchedUpdates();
+
+        // Then a new split of that expense starts, as it does once the rejected split isn't loaded
+        const freshDraft = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${remainingChildTransactionID}`);
+        expect(freshDraft?.comment?.splitExpenses).toHaveLength(2);
+        expect(freshDraft?.comment?.splitExpenses?.some((splitExpense) => splitExpense.transactionID === rejectedChildTransactionID)).toBe(false);
+
+        // And the edit-splits flow, with the rejected split as a row Rory can't edit, isn't opened
+        const editDraft = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${originalTransactionID}`);
+        expect(editDraft).toBeFalsy();
+    });
+
+    it('should keep editing both splits for the submitter after one split was rejected back to them', async () => {
+        const originalTransactionID = 'submitter-original';
+        const rejectedChildTransactionID = 'submitter-rejected-child';
+        const remainingChildTransactionID = 'submitter-remaining-child';
+        const submittedReportID = 'submitter-submitted-report';
+        const draftReportID = 'submitter-draft-report';
+
+        // Given Rory's submitted report and Rory's open report, where the approver's reject moved one of the splits
+        await Onyx.set(`${ONYXKEYS.COLLECTION.REPORT}${submittedReportID}`, {
+            reportID: submittedReportID,
+            type: CONST.REPORT.TYPE.EXPENSE,
+            ownerAccountID: RORY_ACCOUNT_ID,
+            managerID: CARLOS_ACCOUNT_ID,
+            stateNum: CONST.REPORT.STATE_NUM.SUBMITTED,
+            statusNum: CONST.REPORT.STATUS_NUM.SUBMITTED,
+        });
+        await Onyx.set(`${ONYXKEYS.COLLECTION.REPORT}${draftReportID}`, {
+            reportID: draftReportID,
+            type: CONST.REPORT.TYPE.EXPENSE,
+            ownerAccountID: RORY_ACCOUNT_ID,
+            stateNum: CONST.REPORT.STATE_NUM.OPEN,
+            statusNum: CONST.REPORT.STATUS_NUM.OPEN,
+        });
+
+        // And the original expense with its two splits, one on each report
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`, {
+            transactionID: originalTransactionID,
+            amount: -100,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            created: DateUtils.getDBTime(),
+            reportID: CONST.REPORT.SPLIT_REPORT_ID,
+        });
+        const rejectedChildTransaction: Transaction = {
+            transactionID: rejectedChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: draftReportID,
+        };
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${rejectedChildTransactionID}`, rejectedChildTransaction);
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${remainingChildTransactionID}`, {
+            transactionID: remainingChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: submittedReportID,
+        });
+        await waitForBatchedUpdates();
+
+        // When Rory, the submitter, opens the splits from the rejected one on his own open report
+        initSplitExpense(rejectedChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
+        await waitForBatchedUpdates();
+
+        // Then the edit-splits flow opens with both of his splits, as before
+        const editDraft = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${originalTransactionID}`);
+        expect(editDraft?.comment?.splitExpenses).toHaveLength(2);
+    });
+
+    it("should keep editing splits for someone else who opens a split on the submitter's open report", async () => {
+        const originalTransactionID = 'draft-original';
+        const firstChildTransactionID = 'draft-child-1';
+        const secondChildTransactionID = 'draft-child-2';
+        const draftReportID = 'carlos-draft-report';
+
+        // Given Carlos's open report holding both splits of his expense, which nobody rejected
+        await Onyx.set(`${ONYXKEYS.COLLECTION.REPORT}${draftReportID}`, {
+            reportID: draftReportID,
+            type: CONST.REPORT.TYPE.EXPENSE,
+            ownerAccountID: CARLOS_ACCOUNT_ID,
+            stateNum: CONST.REPORT.STATE_NUM.OPEN,
+            statusNum: CONST.REPORT.STATUS_NUM.OPEN,
+        });
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`, {
+            transactionID: originalTransactionID,
+            amount: -100,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            created: DateUtils.getDBTime(),
+            reportID: CONST.REPORT.SPLIT_REPORT_ID,
+        });
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${firstChildTransactionID}`, {
+            transactionID: firstChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: draftReportID,
+        });
+        const secondChildTransaction: Transaction = {
+            transactionID: secondChildTransactionID,
+            amount: -50,
+            currency: 'USD',
+            merchant: 'Test Merchant',
+            comment: {originalTransactionID, source: CONST.IOU.TYPE.SPLIT},
+            created: DateUtils.getDBTime(),
+            reportID: draftReportID,
+        };
+        await Onyx.set(`${ONYXKEYS.COLLECTION.TRANSACTION}${secondChildTransactionID}`, secondChildTransaction);
+        await waitForBatchedUpdates();
+
+        // When Rory, a workspace admin, opens the splits from that report
+        initSplitExpense(secondChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
+        await waitForBatchedUpdates();
+
+        // Then the edit-splits flow opens with both splits, as before
+        const editDraft = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${originalTransactionID}`);
+        expect(editDraft?.comment?.splitExpenses).toHaveLength(2);
     });
 
     it('opens the split edit page only after the overview transition when navigating straight to editing a split', async () => {
@@ -8283,7 +8496,9 @@ describe('initSplitExpense', () => {
         navigate.mockClear();
 
         // When the split flow opens straight to editing one of the splits
-        initSplitExpense(secondChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, {navigateToEditSplitExpense: true});
+        initSplitExpense(secondChildTransaction, undefined, undefined, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID, {
+            navigateToEditSplitExpense: true,
+        });
         await waitForBatchedUpdates();
 
         // Then only the overview is opened at first, so the edit page can't replace the overview's RHP in the same tick
@@ -8313,7 +8528,7 @@ describe('initSplitExpense', () => {
         };
 
         // When the workspace is billing-restricted, the caller passes the restricted policy ID
-        initSplitExpense(transaction, undefined, undefined, undefined, '7', undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, undefined, undefined, '7', undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         // Then the user is redirected to the restricted action page and no split draft is created
@@ -8375,7 +8590,7 @@ describe('initSplitExpense', () => {
             reportID: '456',
         };
 
-        initSplitExpense(transaction, undefined, effectivePolicy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, effectivePolicy, undefined, undefined, undefined, getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         const draftTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${transaction.transactionID}`);
@@ -8421,7 +8636,7 @@ describe('initSplitExpense', () => {
         };
 
         // No effectivePolicy (P2P), and personalPolicyOutputCurrency = 'EUR' passed as the 6th argument.
-        initSplitExpense(transaction, undefined, undefined, undefined, undefined, 'EUR', getCurrencyDecimalsLocal, getCurrencySymbolLocal);
+        initSplitExpense(transaction, undefined, undefined, undefined, undefined, 'EUR', getCurrencyDecimalsLocal, getCurrencySymbolLocal, RORY_ACCOUNT_ID);
         await waitForBatchedUpdates();
 
         const draftTransaction = await getOnyxValue(`${ONYXKEYS.COLLECTION.SPLIT_TRANSACTION_DRAFT}${transaction.transactionID}`);

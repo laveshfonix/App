@@ -28,6 +28,7 @@ import {
     navigateOnDeleteExpense,
 } from '@libs/ReportUtils';
 import showConfirmModalAfterMoreMenuDismiss from '@libs/showConfirmModalAfterMoreMenuDismiss';
+import {isSplitOnSomeoneElsesOpenReport} from '@libs/SplitExpenseUtils';
 import {shouldRestrictUserBillableActions} from '@libs/SubscriptionUtils';
 import {
     getChildTransactions,
@@ -52,6 +53,7 @@ import ROUTES, {DYNAMIC_ROUTES} from '@src/ROUTES';
 import type {Route} from '@src/ROUTES';
 import type * as OnyxTypes from '@src/types/onyx';
 
+import type {OnyxCollection} from 'react-native-onyx';
 import type {ValueOf} from 'type-fest';
 
 import {hasSeenTourSelector} from '@selectors/Onboarding';
@@ -207,7 +209,19 @@ function useExpenseActions({reportID, isReportInSearch = false, backTo, onDuplic
 
     // Split indicator
     const {isExpenseSplit} = getOriginalTransactionWithSplitInfo(transaction, originalTransaction);
-    const hasMultipleSplits = !!transaction?.comment?.originalTransactionID && getChildTransactions(allTransactions, transaction.comment.originalTransactionID).length > 1;
+    const splitChildTransactions = transaction?.comment?.originalTransactionID ? getChildTransactions(allTransactions, transaction.comment.originalTransactionID) : [];
+    // A split rejected back to someone else's open report isn't one this user can split, so it doesn't make this an "Edit splits"
+    const countSplitChildrenForCurrentUser = (reports: OnyxCollection<OnyxTypes.Report>) =>
+        splitChildTransactions.filter(
+            (childTransaction) =>
+                !isSplitOnSomeoneElsesOpenReport(
+                    reports?.[`${ONYXKEYS.COLLECTION.REPORT}${childTransaction?.reportID}`],
+                    reports?.[`${ONYXKEYS.COLLECTION.REPORT}${transaction?.reportID}`],
+                    accountID,
+                ),
+        ).length;
+    const [splitChildrenCountForCurrentUser = 0] = useOnyx(ONYXKEYS.COLLECTION.REPORT, {selector: countSplitChildrenForCurrentUser});
+    const hasMultipleSplits = splitChildrenCountForCurrentUser > 1;
     const hasSplitIndicator = isExpenseSplit && hasMultipleSplits;
     const isDeletingOwnExpense = requestParentReportAction?.actorAccountID === accountID;
     const shouldShowEditSplitOnDeleteAction = isDeletingOwnExpense && !!transaction?.transactionID && shouldOpenSplitExpenseEditFlowOnDelete([transaction.transactionID]);
@@ -368,6 +382,7 @@ function useExpenseActions({reportID, isReportInSearch = false, backTo, onDuplic
                     personalPolicy?.outputCurrency,
                     getCurrencyDecimals,
                     getCurrencySymbol,
+                    accountID,
                 );
             },
         },

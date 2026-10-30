@@ -6,6 +6,7 @@ import isSearchTopmostFullScreenRoute from '@libs/Navigation/helpers/isSearchTop
 import Navigation from '@libs/Navigation/Navigation';
 import {rand64} from '@libs/NumberUtils';
 import {getTransactionDetails, isSelfDM} from '@libs/ReportUtils';
+import {isSplitOnSomeoneElsesOpenReport} from '@libs/SplitExpenseUtils';
 import {buildOptimisticTransaction, getAttendees, getChildTransactions, getOriginalTransactionWithSplitInfo, isDistanceRequest} from '@libs/TransactionUtils';
 
 import CONST from '@src/CONST';
@@ -67,6 +68,7 @@ function initSplitExpense(
     personalPolicyOutputCurrency: string | undefined,
     getCurrencyDecimals: CurrencyListActionsContextType['getCurrencyDecimals'],
     getCurrencySymbol: CurrencyListActionsContextType['getCurrencySymbol'],
+    currentUserAccountID: number,
     {navigateToEditSplitExpense = false}: {navigateToEditSplitExpense?: boolean} = {},
 ): void {
     if (!transaction) {
@@ -83,8 +85,12 @@ function initSplitExpense(
     const originalTransaction = allTransactions?.[`${ONYXKEYS.COLLECTION.TRANSACTION}${originalTransactionID}`];
     const {isExpenseSplit} = getOriginalTransactionWithSplitInfo(transaction, originalTransaction);
     const relatedTransactions = getChildTransactions(allTransactions, originalTransactionID);
-    const hasMultipleSplits = relatedTransactions.length > 1;
     const transactionReport = allReports?.[`${ONYXKEYS.COLLECTION.REPORT}${transaction?.reportID}`];
+    // Same count as the "Split" / "Edit splits" label, so the action opens what its label says
+    const hasMultipleSplits =
+        relatedTransactions.filter(
+            (childTransaction) => !isSplitOnSomeoneElsesOpenReport(allReports?.[`${ONYXKEYS.COLLECTION.REPORT}${childTransaction?.reportID}`], transactionReport, currentUserAccountID),
+        ).length > 1;
     const shouldShowSplitIndicator = isExpenseSplit && hasMultipleSplits;
 
     const isSelfDMReport = isSelfDM(report) || isSelfDM(parentReport);

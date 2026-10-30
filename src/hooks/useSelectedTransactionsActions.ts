@@ -30,6 +30,7 @@ import {
     isTrackExpenseReport,
 } from '@libs/ReportUtils';
 import {getCurrentSearchQueryJSON} from '@libs/SearchQueryUtils';
+import {isSplitOnSomeoneElsesOpenReport} from '@libs/SplitExpenseUtils';
 import {getChildTransactions, getOriginalTransactionWithSplitInfo, hasTransactionBeenRejected, isManagedCardTransaction} from '@libs/TransactionUtils';
 
 import type {IOUType} from '@src/CONST';
@@ -558,7 +559,12 @@ function useSelectedTransactionsActions({
 
         const {isExpenseSplit} = getOriginalTransactionWithSplitInfo(firstTransaction, originalTransaction);
         const parentReport = allReports?.[`${ONYXKEYS.COLLECTION.REPORT}${report?.parentReportID}`];
-        const hasMultipleSplits = getChildTransactions(allTransactions, firstTransaction?.comment?.originalTransactionID).length > 1;
+        const firstTransactionReport = allReports?.[`${ONYXKEYS.COLLECTION.REPORT}${firstTransaction?.reportID}`];
+        const hasMultipleSplits =
+            getChildTransactions(allTransactions, firstTransaction?.comment?.originalTransactionID).filter(
+                (childTransaction) =>
+                    !isSplitOnSomeoneElsesOpenReport(allReports?.[`${ONYXKEYS.COLLECTION.REPORT}${childTransaction?.reportID}`], firstTransactionReport, currentUserAccountID),
+            ).length > 1;
         const canSplitTransaction =
             selectedTransactionsList.length === 1 &&
             report &&
@@ -590,6 +596,7 @@ function useSelectedTransactionsActions({
                         personalPolicy?.outputCurrency,
                         getCurrencyDecimals,
                         getCurrencySymbol,
+                        currentUserAccountID,
                     );
                 },
             });

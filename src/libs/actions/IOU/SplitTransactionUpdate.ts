@@ -2307,7 +2307,9 @@ function updateSplitTransactions({
         // The format is: splits[0][amount], splits[0][category], splits[0][tag] etc.
         const splitApiParams = {} as Record<string, string | number | boolean>;
         for (const [i, split] of splits.entries()) {
-            for (const [key, value] of Object.entries(split)) {
+            // The description goes out as plain text, like the revert sends it. As an object it reaches the server as the
+            // string {"comment":""}, which the server puts into the expense's message, and the report preview shows it
+            for (const [key, value] of Object.entries({...split, comment: split.comment?.comment ?? ''})) {
                 splitApiParams[`splits[${i}][${key}]`] = value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
             }
         }

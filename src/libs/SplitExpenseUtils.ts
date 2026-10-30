@@ -8,7 +8,7 @@ import type {SplitExpense} from '@src/types/onyx/IOU';
 
 import type {OnyxEntry} from 'react-native-onyx';
 
-import {isClosedReport, isReportApproved, isSettled} from './ReportUtils';
+import {isClosedReport, isOpenExpenseReport, isOpenReport, isReportApproved, isSettled} from './ReportUtils';
 
 type SplitWarningParams = {
     splitExpenses: SplitExpense[];
@@ -34,6 +34,15 @@ type SplitSaveErrorParams = {
  */
 function isSplitExpenseFrozen(splitReport: OnyxEntry<Report>): boolean {
     return isReportApproved({report: splitReport}) || isSettled(splitReport) || isClosedReport(splitReport);
+}
+
+/**
+ * Whether a split doesn't count when the current user opens another split of the same expense: it sits on someone else's
+ * open report, while the split being opened is on a report that is no longer open. That's where a split goes when an approver
+ * rejects it, and the approver can't split it there, so it shouldn't turn the split left on the report into "Edit splits".
+ */
+function isSplitOnSomeoneElsesOpenReport(splitReport: OnyxEntry<Report>, openedSplitReport: OnyxEntry<Report>, currentUserAccountID: number | undefined): boolean {
+    return !isOpenReport(openedSplitReport) && isOpenExpenseReport(splitReport) && !!splitReport?.ownerAccountID && splitReport.ownerAccountID !== currentUserAccountID;
 }
 
 /**
@@ -126,4 +135,4 @@ function computeSplitSaveErrorMessage({splitExpenses, transactionDetailsAmount, 
     return '';
 }
 
-export {computeSplitWarningMessage, computeSplitSaveErrorMessage, isSplitExpenseFrozen};
+export {computeSplitWarningMessage, computeSplitSaveErrorMessage, isSplitExpenseFrozen, isSplitOnSomeoneElsesOpenReport};

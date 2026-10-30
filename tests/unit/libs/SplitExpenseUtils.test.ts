@@ -1,6 +1,6 @@
 import type {LocalizedTranslate} from '@components/LocaleContextProvider';
 
-import {computeSplitSaveErrorMessage, computeSplitWarningMessage, isSplitExpenseFrozen} from '@libs/SplitExpenseUtils';
+import {computeSplitSaveErrorMessage, computeSplitWarningMessage, isSplitExpenseFrozen, isSplitOnSomeoneElsesOpenReport} from '@libs/SplitExpenseUtils';
 
 import CONST from '@src/CONST';
 import type {TranslationParameters, TranslationPaths} from '@src/languages/types';
@@ -461,5 +461,55 @@ describe('isSplitExpenseFrozen', () => {
         // isSettled's exclusion; stateNum stays SUBMITTED so isReportApproved/isClosedReport don't mask it.
         const report = makeReport({stateNum: CONST.REPORT.STATE_NUM.SUBMITTED, statusNum: CONST.REPORT.STATUS_NUM.APPROVED, isWaitingOnBankAccount: true});
         expect(isSplitExpenseFrozen(report)).toBe(false);
+    });
+});
+
+describe('isSplitOnSomeoneElsesOpenReport', () => {
+    const SUBMITTER_ACCOUNT_ID = 1;
+    const APPROVER_ACCOUNT_ID = 2;
+
+    function makeExpenseReport(stateNum: Report['stateNum'], statusNum: Report['statusNum'], ownerAccountID?: number): Report {
+        return {reportID: `report-${stateNum}-${ownerAccountID}`, type: CONST.REPORT.TYPE.EXPENSE, stateNum, statusNum, ownerAccountID};
+    }
+
+    const submittedReport = makeExpenseReport(CONST.REPORT.STATE_NUM.SUBMITTED, CONST.REPORT.STATUS_NUM.SUBMITTED, SUBMITTER_ACCOUNT_ID);
+    const submittersOpenReport = makeExpenseReport(CONST.REPORT.STATE_NUM.OPEN, CONST.REPORT.STATUS_NUM.OPEN, SUBMITTER_ACCOUNT_ID);
+
+    it("returns true for a split rejected back to the submitter's open report, seen from the submitted report", () => {
+        // Given a split the approver rejected back to the submitter's open report
+        // When the approver opens the split that is left on the submitted report
+        // Then the rejected split doesn't count as one of the approver's splits
+        expect(isSplitOnSomeoneElsesOpenReport(submittersOpenReport, submittedReport, APPROVER_ACCOUNT_ID)).toBe(true);
+    });
+
+    it('returns false for the submitter, whose open report it is', () => {
+        // Given the same rejected split
+        // When the submitter opens the split left on the submitted report
+        // Then it still counts, so they keep editing both splits together
+        expect(isSplitOnSomeoneElsesOpenReport(submittersOpenReport, submittedReport, SUBMITTER_ACCOUNT_ID)).toBe(false);
+    });
+
+    it('returns false when the split being opened is on an open report too', () => {
+        // Given an admin who opens a split on the submitter's open report, with the other split on the same report
+        // When the other split is checked
+        // Then it still counts, since the admin can split there and nothing was rejected
+        expect(isSplitOnSomeoneElsesOpenReport(submittersOpenReport, submittersOpenReport, APPROVER_ACCOUNT_ID)).toBe(false);
+    });
+
+    it('returns false for a split that is still on a submitted report', () => {
+        // Given both splits on submitted reports
+        // When the approver opens one of them
+        // Then the other one counts, because the approver can split it there
+        expect(isSplitOnSomeoneElsesOpenReport(submittedReport, submittedReport, APPROVER_ACCOUNT_ID)).toBe(false);
+    });
+
+    it('returns false when the report or its owner is unknown', () => {
+        // Given a split whose report isn't loaded, or an open report without an owner
+        const reportWithoutOwner = makeExpenseReport(CONST.REPORT.STATE_NUM.OPEN, CONST.REPORT.STATUS_NUM.OPEN);
+
+        // When either is checked from the submitted report
+        // Then the split keeps counting as it does today, since nothing says it belongs to someone else
+        expect(isSplitOnSomeoneElsesOpenReport(undefined, submittedReport, APPROVER_ACCOUNT_ID)).toBe(false);
+        expect(isSplitOnSomeoneElsesOpenReport(reportWithoutOwner, submittedReport, APPROVER_ACCOUNT_ID)).toBe(false);
     });
 });
