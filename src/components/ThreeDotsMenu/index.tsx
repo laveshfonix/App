@@ -10,11 +10,13 @@ import {useMemoizedLazyExpensifyIcons} from '@hooks/useLazyAsset';
 import useLocalize from '@hooks/useLocalize';
 import useOnyx from '@hooks/useOnyx';
 import usePopoverPosition from '@hooks/usePopoverPosition';
+import useResponsiveLayout from '@hooks/useResponsiveLayout';
 import useTheme from '@hooks/useTheme';
 import useThemeStyles from '@hooks/useThemeStyles';
 import useWindowDimensions from '@hooks/useWindowDimensions';
 
 import {isMobile} from '@libs/Browser';
+import getPlatform from '@libs/getPlatform';
 
 import type {AnchorPosition} from '@styles/index';
 import variables from '@styles/variables';
@@ -72,6 +74,12 @@ function ThreeDotsMenu({
     const expensifyIcons = useMemoizedLazyExpensifyIcons(['ThreeDots']);
     const isBehindModal = modal?.willAlertModalBecomeVisible && !modal?.isPopover && !shouldOverlay;
     const {windowWidth, windowHeight} = useWindowDimensions();
+    const isWeb = getPlatform() === CONST.PLATFORM.WEB;
+    // eslint-disable-next-line rulesdir/prefer-shouldUseNarrowLayout-instead-of-isSmallScreenWidth -- the menu switches between a bottom sheet and a popover at this width
+    const {isSmallScreenWidth} = useResponsiveLayout();
+    // On web, PopoverMenu keeps the open menu next to the button while the page lays out after a resize, and measuring as soon as the size
+    // changes reads where the button was before that. So web only measures again when the menu switches between a bottom sheet and a popover.
+    const remeasureKey = isWeb ? isSmallScreenWidth : `${windowWidth}x${windowHeight}`;
     const showPopoverMenu = () => {
         setPopupMenuVisible(true);
     };
@@ -144,7 +152,7 @@ function ThreeDotsMenu({
         getMenuPosition?.().then((value) => {
             setPosition(value);
         });
-    }, [windowWidth, windowHeight, shouldSelfPosition, getMenuPosition, isPopupMenuVisible]);
+    }, [remeasureKey, shouldSelfPosition, getMenuPosition, isPopupMenuVisible]);
 
     const getIconFill = () => {
         if (!shouldChangeFillOnOpen) {

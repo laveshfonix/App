@@ -45,6 +45,7 @@ import {deepEqual} from 'fast-equals';
 import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {StyleSheet, View} from 'react-native';
 
+import useFollowAnchor from './useFollowAnchor';
 import usePopoverMenuFocusManagement from './usePopoverMenuFocusManagement';
 
 type PopoverMenuItem = MenuItemProps & {
@@ -420,6 +421,8 @@ function BasePopoverMenu({
     const currentMenuItemsFocusedIndex = getSelectedItemIndex(currentMenuItems);
     const [enteredSubMenuIndexes, setEnteredSubMenuIndexes] = useState<readonly number[]>(CONST.EMPTY_ARRAY);
     const isWeb = getPlatform() === CONST.PLATFORM.WEB;
+    // Bottom-docked menus (small screens) don't use the anchor position
+    const followedAnchorPosition = useFollowAnchor(anchorRef, anchorPosition, isVisible && !isSmallScreenWidth);
     const isSearchEnabled = !!searchInputOptions;
     const [isSearchInputFocused, setIsSearchInputFocused] = useState(false);
     const scrollViewRef = useRef<ComponentRef<typeof ScrollView>>(null);
@@ -823,7 +826,7 @@ function BasePopoverMenu({
 
     return (
         <PopoverWithMeasuredContent
-            anchorPosition={anchorPosition}
+            anchorPosition={followedAnchorPosition}
             anchorRef={anchorRef}
             anchorAlignment={anchorAlignment}
             shouldSwitchPositionIfOverflow={shouldSwitchPositionIfOverflow}

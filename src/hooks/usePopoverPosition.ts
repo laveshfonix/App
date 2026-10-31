@@ -19,6 +19,25 @@ type MeasurableRef = RefObject<ComponentRef<typeof View> | HTMLDivElement | null
 
 type Rect = {x: number; y: number} & Dimensions;
 
+type MeasuredAnchor = {
+    /** The element the position was measured from */
+    element: unknown;
+
+    /** Where that element was on screen when it was measured */
+    x: number;
+    y: number;
+};
+
+const measuredAnchors = new WeakMap<AnchorPosition, MeasuredAnchor>();
+
+/**
+ * Which element a position returned by calculatePopoverPosition was measured from, and where it was at that moment. An open popover can
+ * then follow its anchor from that exact point, even when the anchor moves between the measurement and the popover receiving the position.
+ */
+function getMeasuredAnchor(position: AnchorPosition): MeasuredAnchor | undefined {
+    return measuredAnchors.get(position);
+}
+
 /** Sync alignment math — for callers that already have a measured rect. */
 function computeAnchorPosition(rect: Rect, alignment: AnchorAlignment): AnchorPosition {
     const {x, y, width, height} = rect;
@@ -67,7 +86,9 @@ function usePopoverPosition() {
         return new Promise<AnchorPosition & Dimensions>((resolve) => {
             element.measureInWindow((x, y, width, height) => {
                 const {horizontal, vertical} = computeAnchorPosition({x, y, width, height}, anchorAlignment);
-                resolve({horizontal, vertical, width, height});
+                const position = {horizontal, vertical, width, height};
+                measuredAnchors.set(position, {element, x, y});
+                resolve(position);
             });
         });
     };
@@ -76,4 +97,4 @@ function usePopoverPosition() {
 }
 
 export default usePopoverPosition;
-export {computeAnchorPosition};
+export {computeAnchorPosition, getMeasuredAnchor};
