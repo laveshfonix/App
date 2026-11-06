@@ -681,4 +681,68 @@ describe('useSidebarOrderedReports', () => {
             expect(getUpdatedReportsKeys()).toEqual([`${ONYXKEYS.COLLECTION.REPORT}${newDMReportID}`]);
         });
     });
+
+    describe('LHN cache', () => {
+        const reportKey1 = `${ONYXKEYS.COLLECTION.REPORT}1` as const;
+        const reportKey2 = `${ONYXKEYS.COLLECTION.REPORT}2` as const;
+
+        it('should not render the provider again after storing a new LHN map', async () => {
+            // Given an LHN with two chats, where every incremental update returns a new map, as a real change does
+            const reports = createMockReports({
+                report1: {reportName: 'Chat 1'},
+                report2: {reportName: 'Chat 2'},
+            });
+            mockSidebarUtils.getReportsToDisplayInLHN.mockReturnValue({[reportKey1]: reports['1'], [reportKey2]: reports['2']});
+            mockSidebarUtils.updateReportsToDisplayInLHN.mockImplementation(({displayedReports}) => ({...displayedReports}));
+            await act(async () => {
+                await Onyx.multiSet({[reportKey1]: reports['1'], [reportKey2]: reports['2']} satisfies OnyxMultiSetInput);
+            });
+            renderHook(() => useSidebarOrderedReports(), {
+                wrapper: TestWrapper,
+            });
+            await waitForBatchedUpdatesWithAct();
+            mockSidebarUtils.updateReportsToDisplayInLHN.mockClear();
+
+            // When one chat changes
+            await act(async () => {
+                await Onyx.merge(reportKey1, {reportName: 'Chat 1 renamed'});
+            });
+            await waitForBatchedUpdatesWithAct();
+
+            // Then the LHN is updated once, for that chat only. Storing the new map must not render the provider again:
+            // during a burst of Onyx writes React counts each of those renders as a nested update and throws "Maximum update depth exceeded"
+            expect(mockSidebarUtils.updateReportsToDisplayInLHN).toHaveBeenCalledTimes(1);
+            expect(mockSidebarUtils.updateReportsToDisplayInLHN.mock.calls.at(0)?.[0]?.updatedReportsKeys).toEqual([reportKey1]);
+        });
+
+        it('should recheck a displayed thread when only its parent report changes', async () => {
+            // Given an LHN with an expense report and a thread of one of its expenses
+            const expenseReport = {reportID: '1', reportName: 'Expense report', type: CONST.REPORT.TYPE.EXPENSE, total: -2000} as Report;
+            const expenseThread = {reportID: '2', reportName: 'Expense thread', type: CONST.REPORT.TYPE.CHAT, parentReportID: '1', parentReportActionID: '100'} as Report;
+            mockSidebarUtils.getReportsToDisplayInLHN.mockReturnValue({[reportKey1]: expenseReport, [reportKey2]: expenseThread});
+            mockSidebarUtils.updateReportsToDisplayInLHN.mockImplementation(({displayedReports}) => displayedReports);
+            await act(async () => {
+                await Onyx.multiSet({[reportKey1]: expenseReport, [reportKey2]: expenseThread} satisfies OnyxMultiSetInput);
+            });
+            renderHook(() => useSidebarOrderedReports(), {
+                wrapper: TestWrapper,
+            });
+            await waitForBatchedUpdatesWithAct();
+            mockSidebarUtils.updateReportsToDisplayInLHN.mockClear();
+
+            // When only the expense report changes, as when one of its two expenses is deleted
+            await act(async () => {
+                await Onyx.merge(reportKey1, {total: -1000});
+            });
+            await waitForBatchedUpdatesWithAct();
+
+            // Then the thread is rechecked with it. A thread is hidden once its expense report is down to one expense, and
+            // the thread itself doesn't change when that happens
+            expect(mockSidebarUtils.updateReportsToDisplayInLHN).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    updatedReportsKeys: [reportKey1, reportKey2],
+                }),
+            );
+        });
+    });
 });

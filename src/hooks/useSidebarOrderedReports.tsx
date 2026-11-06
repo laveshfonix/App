@@ -1,4 +1,5 @@
 import {setInboxTab} from '@libs/actions/User';
+import getLHNReportKeysToRecheck from '@libs/getLHNReportKeysToRecheck';
 import getReportAttributesUpdates from '@libs/getReportAttributesUpdates';
 import Log from '@libs/Log';
 import SidebarUtils from '@libs/SidebarUtils';
@@ -260,7 +261,8 @@ function SidebarOrderedReportsContextProvider({
 
         // When a dependency changes but no report-specific keys were updated, getUpdatedReports() returns [].
         // Rather than falling through to a full scan of all reports, recheck only the already-displayed reports.
-        let effectiveUpdatedReports = updatedReports.length === 0 && hasCachedReports ? Object.keys(currentReportsToDisplay) : updatedReports;
+        let effectiveUpdatedReports =
+            updatedReports.length === 0 && hasCachedReports ? Object.keys(currentReportsToDisplay) : getLHNReportKeysToRecheck(updatedReports, currentReportsToDisplay, chatReports);
 
         // When guide personal details hydrate after the reports collection, guideAccountIDs changes but
         // getUpdatedReports() returns no report keys. Re-evaluate all reports so domain rooms previously
@@ -361,9 +363,12 @@ function SidebarOrderedReportsContextProvider({
         return result;
     }, [reportsDrafts]);
 
-    useEffect(() => {
+    // Keep the new map as the cache for the next incremental update. This runs during render on purpose: React re-runs this
+    // component before committing, so it costs no extra commit. Setting it from an effect added one render after every commit,
+    // and during a burst of Onyx writes React counted those renders as nested updates until it threw "Maximum update depth exceeded".
+    if (currentReportsToDisplay !== reportsToDisplayInLHN) {
         setCurrentReportsToDisplay(reportsToDisplayInLHN);
-    }, [reportsToDisplayInLHN]);
+    }
 
     const getOrderedReportIDs = useCallback(
         () => SidebarUtils.sortReportsToDisplayInLHN(reportsToDisplayInLHN, priorityMode, localeCompare, hasDraftByReportID, reportNameValuePairs, reportAttributes),
